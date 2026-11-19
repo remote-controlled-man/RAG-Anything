@@ -194,3 +194,106 @@ async def test_table_generate_description_only_respects_token_budget():
     assert "rows omitted for LLM context window budget" in prompt_sent
     assert desc == "Analyzed table"
     assert entity_info["entity_name"] == "T1 (table)"
+
+
+@pytest.mark.asyncio
+async def test_html_row_headers_are_truncated_before_captioning():
+    tokenizer = MagicMock()
+    tokenizer.encode.side_effect = lambda text: list(text.encode("utf-8"))
+    caption = AsyncMock(
+        return_value='{"detailed_description": "Regional sales", "entity_info": '
+        '{"entity_name": "Sales", "entity_type": "table", "summary": "Sales data"}}'
+    )
+    processor = TableModalProcessor(
+        create_mock_lightrag(tokenizer), caption, max_table_tokens=350
+    )
+    header = "<tr><th>Region</th><th>Sales</th></tr>"
+    rows = [f'<tr><th scope="row">Region {i}</th><td>{i}</td></tr>' for i in range(20)]
+    table = (
+        f"<table><thead>{header}</thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+    description, _ = await processor.generate_description_only(
+        {"table_body": table}, "table"
+    )
+
+    caption.assert_awaited_once()
+    prompt = caption.await_args.args[0]
+    sent_table = prompt[prompt.index("<table>") : prompt.index("</table>") + 8]
+    assert len(sent_table.encode("utf-8")) <= 350
+    assert header in sent_table
+    assert rows[0] in sent_table
+    assert rows[-1] not in sent_table
+    assert "total rows: 20" in sent_table
+    assert description == "Regional sales"
+
+
+@pytest.mark.parametrize(
+    "cells",
+    [
+        "<th>Region {i}</th><td>{i}</td>",
+        '<th scope="row">Region {i}</th><th scope="row">{i}</th>',
+        "<th scope='ROWGROUP'>Region {i}</th><th scope='rowgroup'>{i}</th>",
+        "<th scope=row>Region {i}</th><th scope=row>{i}</th>",
+    ],
+    ids=["mixed-cells", "row-scope", "rowgroup-scope", "unquoted-scope"],
+)
+def test_html_inferred_headers_allow_row_header_truncation(cells):
+    from raganything.token_budget import truncate_table
+
+    header = (
+        '<tr><th colspan="2" scope="colgroup">Sales</th></tr>'
+        "<tr><th>Region</th><th>Revenue</th></tr>"
+    )
+    rows = [f"<tr>{cells.format(i=i)}</tr>" for i in range(20)]
+    table = f"<table>{header}" + "".join(rows) + "</table>"
+
+    result = truncate_table(table, 400, len)
+
+    assert len(result) <= 400
+    assert header in result
+    assert rows[0] in result
+    assert rows[-1] not in result
+    assert "total rows: 20" in result
+    assert result.count("<tr>") == result.count("</tr>")
+    assert result.endswith("</tbody></table>")
+
+
+def test_html_explicit_header_section_preserves_mixed_cells_and_caption():
+    from raganything.token_budget import truncate_table
+
+    caption = "<caption>Annual sales</caption>"
+    header = (
+        '<tr><td></td><th colspan="2">Revenue</th></tr>'
+        "<tr><th>Region</th><th>2025</th><th>2026</th></tr>"
+    )
+    rows = [
+        f'<tr><th scope="row">Region {i}</th><td>{i}</td><td>{i + 1}</td></tr>'
+        for i in range(20)
+    ]
+    table = (
+        f'<table>{caption}<thead class="columns">{header}</thead><tbody>'
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+    result = truncate_table(table, 400, len)
+
+    assert len(result) <= 400
+    assert caption in result
+    assert header in result
+    assert rows[0] in result
+    assert rows[-1] not in result
+    assert "total rows: 20" in result
+
+
+@pytest.mark.parametrize("budget", [0, 10000], ids=["disabled", "fits"])
+def test_html_row_header_table_passes_through_when_it_fits(budget):
+    from raganything.token_budget import truncate_table
+
+    table = (
+        "<table><thead><tr><th>Region</th><th>Revenue</th></tr></thead>"
+        '<tbody><tr><th scope="row">North</th><td>42</td></tr></tbody></table>'
+    )
+
+    assert truncate_table(table, budget, len) == table

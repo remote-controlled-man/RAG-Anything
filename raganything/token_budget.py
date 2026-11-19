@@ -1,10 +1,30 @@
 """Opt-in limits for model input bodies, preserving complete table rows."""
 
 import re
+from html.parser import HTMLParser
 
 
 class TokenBudgetError(ValueError):
     """The requested budget cannot contain the mandatory structure and marker."""
+
+
+class _HeaderRowParser(HTMLParser):
+    """Identify column-only header rows when no explicit thead is present."""
+
+    def __init__(self):
+        super().__init__()
+        self.has_column_header = False
+        self.has_data_cell = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "td":
+            self.has_data_cell = True
+        elif tag == "th":
+            scope = (dict(attrs).get("scope") or "").strip().lower()
+            if scope in {"row", "rowgroup"}:
+                self.has_data_cell = True
+            else:
+                self.has_column_header = True
 
 
 def truncate_text(text, budget, count_tokens, marker):
@@ -51,14 +71,25 @@ def truncate_table(body, budget, count_tokens):
             raise TokenBudgetError(
                 "Split nested or multiple tables before applying a token budget"
             )
-        rows = re.findall(r"<tr\b[^>]*>.*?</tr\s*>", body, re.IGNORECASE | re.DOTALL)
+        row_pattern = r"<tr\b[^>]*>.*?</tr\s*>"
+        rows = re.findall(row_pattern, body, re.IGNORECASE | re.DOTALL)
         if not rows:
             raise TokenBudgetError("HTML table has no complete rows to retain")
-        header_count = 0
-        for row in rows:
-            if not re.search(r"<th\b", row, re.IGNORECASE):
-                break
-            header_count += 1
+        thead = re.search(
+            r"<thead\b[^>]*>(.*?)</thead\s*>", body, re.IGNORECASE | re.DOTALL
+        )
+        if thead:
+            header_count = len(
+                re.findall(row_pattern, thead.group(1), re.IGNORECASE | re.DOTALL)
+            )
+        else:
+            header_count = 0
+            for row in rows:
+                cells = _HeaderRowParser()
+                cells.feed(row)
+                if not cells.has_column_header or cells.has_data_cell:
+                    break
+                header_count += 1
         header_count = max(1, header_count)
         header, data = "".join(rows[:header_count]), rows[header_count:]
         caption = re.search(
