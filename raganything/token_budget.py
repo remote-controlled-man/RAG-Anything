@@ -27,6 +27,26 @@ class _HeaderRowParser(HTMLParser):
                 self.has_column_header = True
 
 
+class _TableHeadParser(HTMLParser):
+    """Count explicit header rows without treating comments or raw text as tags."""
+
+    def __init__(self):
+        super().__init__()
+        self.header_count = None
+        self.in_thead = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "thead" and self.header_count is None:
+            self.header_count = 0
+            self.in_thead = True
+        elif tag == "tr" and self.in_thead:
+            self.header_count += 1
+
+    def handle_endtag(self, tag):
+        if tag == "thead":
+            self.in_thead = False
+
+
 def truncate_text(text, budget, count_tokens, marker):
     if budget <= 0 or count_tokens(text) <= budget:
         return text
@@ -75,13 +95,11 @@ def truncate_table(body, budget, count_tokens):
         rows = re.findall(row_pattern, body, re.IGNORECASE | re.DOTALL)
         if not rows:
             raise TokenBudgetError("HTML table has no complete rows to retain")
-        thead = re.search(
-            r"<thead\b[^>]*>(.*?)</thead\s*>", body, re.IGNORECASE | re.DOTALL
-        )
-        if thead:
-            header_count = len(
-                re.findall(row_pattern, thead.group(1), re.IGNORECASE | re.DOTALL)
-            )
+        head = _TableHeadParser()
+        head.feed(body)
+        head.close()
+        if head.header_count is not None:
+            header_count = head.header_count
         else:
             header_count = 0
             for row in rows:

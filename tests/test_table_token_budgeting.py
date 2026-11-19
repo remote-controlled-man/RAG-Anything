@@ -297,3 +297,32 @@ def test_html_row_header_table_passes_through_when_it_fits(budget):
     )
 
     assert truncate_table(table, budget, len) == table
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "<!-- <thead></thead> -->",
+        '<script>const example = "<thead></thead>";</script>',
+        "<style>/* <thead></thead> */</style>",
+    ],
+    ids=["comment", "script", "style"],
+)
+@pytest.mark.parametrize("budget", [130, 185], ids=["header-too-large", "fits"])
+def test_html_header_inference_ignores_non_markup_thead_text(annotation, budget):
+    from raganything.token_budget import TokenBudgetError, truncate_table
+
+    header = "<tr><th>Sales</th></tr><tr><th>Revenue</th></tr>"
+    rows = [f"<tr><td>Value {i}</td></tr>" for i in range(20)]
+    table = f"<table>{annotation}{header}" + "".join(rows) + "</table>"
+
+    if budget == 130:
+        with pytest.raises(TokenBudgetError, match="header"):
+            truncate_table(table, budget, len)
+        return
+
+    result = truncate_table(table, budget, len)
+
+    assert len(result) <= budget
+    assert header in result
+    assert "total rows: 20" in result
