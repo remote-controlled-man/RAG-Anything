@@ -326,3 +326,73 @@ def test_html_header_inference_ignores_non_markup_thead_text(annotation, budget)
     assert len(result) <= budget
     assert header in result
     assert "total rows: 20" in result
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        "<!-- <thead><tr><th>Example</th></tr></thead> -->",
+        "<!-- <thead><tr> -->",
+        '<script>const example = "<thead><tr><th>Example</th></tr></thead>";</script>',
+        "<style>/* <thead><tr><th>Example</th></tr></thead> */</style>",
+    ],
+    ids=["comment", "incomplete-comment-row", "script", "style"],
+)
+def test_html_header_count_and_rows_use_the_same_markup(annotation):
+    from raganything.token_budget import truncate_table
+
+    header = "<tr><th>Sales</th></tr><tr><th>Revenue</th></tr>"
+    rows = [f"<tr><td>Value {i}</td></tr>" for i in range(20)]
+    table = (
+        f"<table>{annotation}<thead>{header}</thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+    result = truncate_table(table, 300, len)
+
+    assert len(result) <= 300
+    assert header in result
+    assert rows[0] in result
+    assert "total rows: 20" in result
+
+
+@pytest.mark.parametrize("group", ["tbody", "tfoot"])
+def test_html_row_group_start_ends_an_implicit_thead(group):
+    from raganything.token_budget import truncate_table
+
+    header = "<tr><th>Sales</th></tr><tr><th>Revenue</th></tr>"
+    rows = [f"<tr><td>Value {i}</td></tr>" for i in range(20)]
+    table = f"<table><thead>{header}<{group}>" + "".join(rows) + f"</{group}></table>"
+
+    result = truncate_table(table, 300, len)
+
+    assert len(result) <= 300
+    assert header in result
+    assert rows[0] in result
+    assert "total rows: 20" in result
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_html_row_source_offsets_preserve_multiline_unicode_markup(newline):
+    from raganything.token_budget import truncate_table
+
+    header = f"<tr>{newline}<th>区域</th><th>Revenue</th>{newline}</tr >"
+    rows = [
+        f'<tr data-label="a > b">{newline}<th scope="row">北方 {i}</th>'
+        f"<td>{i}</td>{newline}</tr >"
+        for i in range(20)
+    ]
+    table = (
+        f"<table>{newline}<thead>{header}</thead>{newline}<tbody>"
+        + newline.join(rows)
+        + "</tbody></table>"
+    )
+
+    result = truncate_table(table, 500, lambda text: len(text.encode("utf-8")))
+
+    assert len(result.encode("utf-8")) <= 500
+    assert header in result
+    assert rows[0] in result
+    assert rows[-1] not in result
+    assert "total rows: 20" in result

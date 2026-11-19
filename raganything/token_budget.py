@@ -8,41 +8,57 @@ class TokenBudgetError(ValueError):
     """The requested budget cannot contain the mandatory structure and marker."""
 
 
-class _HeaderRowParser(HTMLParser):
-    """Identify column-only header rows when no explicit thead is present."""
+class _HTMLTableParser(HTMLParser):
+    """Extract complete rows and their header count from the same HTML stream."""
 
-    def __init__(self):
+    def __init__(self, body):
         super().__init__()
+        self.body = body
+        self.line_offsets = [0] + [match.end() for match in re.finditer("\n", body)]
+        self.rows = []
+        self.column_header_rows = []
+        self.row_start = None
+        self.row_in_thead = False
         self.has_column_header = False
         self.has_data_cell = False
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "td":
-            self.has_data_cell = True
-        elif tag == "th":
-            scope = (dict(attrs).get("scope") or "").strip().lower()
-            if scope in {"row", "rowgroup"}:
-                self.has_data_cell = True
-            else:
-                self.has_column_header = True
-
-
-class _TableHeadParser(HTMLParser):
-    """Count explicit header rows without treating comments or raw text as tags."""
-
-    def __init__(self):
-        super().__init__()
         self.header_count = None
         self.in_thead = False
+
+    def _offset(self):
+        line, column = self.getpos()
+        return self.line_offsets[line - 1] + column
 
     def handle_starttag(self, tag, attrs):
         if tag == "thead" and self.header_count is None:
             self.header_count = 0
             self.in_thead = True
-        elif tag == "tr" and self.in_thead:
-            self.header_count += 1
+        elif tag in {"tbody", "tfoot"}:
+            self.in_thead = False
+        if tag == "tr" and self.row_start is None:
+            self.row_start = self._offset()
+            self.row_in_thead = self.in_thead
+            self.has_column_header = False
+            self.has_data_cell = False
+        elif self.row_start is not None:
+            if tag == "td":
+                self.has_data_cell = True
+            elif tag == "th":
+                scope = (dict(attrs).get("scope") or "").strip().lower()
+                if scope in {"row", "rowgroup"}:
+                    self.has_data_cell = True
+                else:
+                    self.has_column_header = True
 
     def handle_endtag(self, tag):
+        if tag == "tr" and self.row_start is not None:
+            end = self.body.find(">", self._offset()) + 1
+            self.rows.append(self.body[self.row_start : end])
+            self.column_header_rows.append(
+                self.has_column_header and not self.has_data_cell
+            )
+            if self.row_in_thead:
+                self.header_count += 1
+            self.row_start = None
         if tag == "thead":
             self.in_thead = False
 
@@ -91,21 +107,18 @@ def truncate_table(body, budget, count_tokens):
             raise TokenBudgetError(
                 "Split nested or multiple tables before applying a token budget"
             )
-        row_pattern = r"<tr\b[^>]*>.*?</tr\s*>"
-        rows = re.findall(row_pattern, body, re.IGNORECASE | re.DOTALL)
+        table = _HTMLTableParser(body)
+        table.feed(body)
+        table.close()
+        rows = table.rows
         if not rows:
             raise TokenBudgetError("HTML table has no complete rows to retain")
-        head = _TableHeadParser()
-        head.feed(body)
-        head.close()
-        if head.header_count is not None:
-            header_count = head.header_count
+        if table.header_count is not None:
+            header_count = table.header_count
         else:
             header_count = 0
-            for row in rows:
-                cells = _HeaderRowParser()
-                cells.feed(row)
-                if not cells.has_column_header or cells.has_data_cell:
+            for is_header in table.column_header_rows:
+                if not is_header:
                     break
                 header_count += 1
         header_count = max(1, header_count)
