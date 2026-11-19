@@ -23,12 +23,19 @@ class _HTMLTableParser(HTMLParser):
         self.has_data_cell = False
         self.header_count = None
         self.in_thead = False
+        self.template_depth = 0
 
     def _offset(self):
         line, column = self.getpos()
         return self.line_offsets[line - 1] + column
 
     def handle_starttag(self, tag, attrs):
+        # Template content belongs to a separate document fragment.
+        if tag == "template":
+            self.template_depth += 1
+            return
+        if self.template_depth:
+            return
         if tag == "thead" and self.header_count is None:
             self.header_count = 0
             self.in_thead = True
@@ -50,6 +57,11 @@ class _HTMLTableParser(HTMLParser):
                     self.has_column_header = True
 
     def handle_endtag(self, tag):
+        if tag == "template":
+            self.template_depth = max(0, self.template_depth - 1)
+            return
+        if self.template_depth:
+            return
         if tag == "tr" and self.row_start is not None:
             end = self.body.find(">", self._offset()) + 1
             self.rows.append(self.body[self.row_start : end])

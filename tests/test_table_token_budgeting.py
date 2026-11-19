@@ -305,8 +305,10 @@ def test_html_row_header_table_passes_through_when_it_fits(budget):
         "<!-- <thead></thead> -->",
         '<script>const example = "<thead></thead>";</script>',
         "<style>/* <thead></thead> */</style>",
+        "<template><thead></thead></template>",
+        "<template><template><thead></thead></template></template>",
     ],
-    ids=["comment", "script", "style"],
+    ids=["comment", "script", "style", "template", "nested-template"],
 )
 @pytest.mark.parametrize("budget", [130, 185], ids=["header-too-large", "fits"])
 def test_html_header_inference_ignores_non_markup_thead_text(annotation, budget):
@@ -395,4 +397,21 @@ def test_html_row_source_offsets_preserve_multiline_unicode_markup(newline):
     assert header in result
     assert rows[0] in result
     assert rows[-1] not in result
+    assert "total rows: 20" in result
+
+
+@pytest.mark.parametrize("depth", [1, 2], ids=["template", "nested-template"])
+def test_html_header_cells_ignore_inert_template_contents(depth):
+    from raganything.token_budget import truncate_table
+
+    template = "<template>" * depth + "<td>Example</td>" + "</template>" * depth
+    header = f"<tr><th>Sales{template}</th></tr><tr><th>Revenue</th></tr>"
+    rows = [f"<tr><td>Value {i}</td></tr>" for i in range(20)]
+    table = f"<table>{header}" + "".join(rows) + "</table>"
+
+    result = truncate_table(table, 400, len)
+
+    assert len(result) <= 400
+    assert header in result
+    assert rows[0] in result
     assert "total rows: 20" in result
